@@ -162,6 +162,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 tool_provider=self._base_tool_provider,
                 query=_first_user_message_text(getattr(state, "chat_messages", None)),
                 run_config=config,
+                app_scope_state=state,
             )
         except RuntimeError:
             # Cap/shortlist failures surface intentionally — do not silently fall back.
