@@ -21,6 +21,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools import (
     bind_tools_max_count_from_settings,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.tool_names import provider_safe_tools
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.app_scope import select_scoped_apps
 
 
 def _record_bind_tools_degraded(reason: str) -> None:
@@ -167,6 +168,7 @@ async def _indexed_provider_tools_first_wins(
 async def _indexed_tools_for_native_bind(
     tool_provider: ToolProviderInterface,
     tools_context_ref: Optional[Dict[str, Any]],
+    allowed_app_names: Optional[List[str]] = None,
 ) -> Dict[str, StructuredTool]:
     """Registry MCP tools plus in-graph overlays (skills, OpenSandbox shell, todos, find_tools).
 
@@ -174,7 +176,20 @@ async def _indexed_tools_for_native_bind(
     copies them onto ``tools_for_prompt`` only. Overlay must merge so ``cuga_lite_bind_tools_tool_names``
     can bind them by name.
     """
-    by_name = await _indexed_provider_tools_first_wins(tool_provider)
+    if allowed_app_names is None:
+        by_name = await _indexed_provider_tools_first_wins(tool_provider)
+    else:
+        by_name = {}
+        for app_name in allowed_app_names:
+            try:
+                app_tools = await tool_provider.get_tools(app_name)
+            except Exception as e:
+                logger.warning("bind_tools: get_tools({}) failed: {}", app_name, e)
+                continue
+            for tool in app_tools or []:
+                name = getattr(tool, "name", None) or ""
+                if name and name not in by_name:
+                    by_name[name] = tool
     overlay = (tools_context_ref or {}).get("_lc_bind_tools_overlay_structured_tools") or []
     if not overlay:
         return by_name
@@ -195,6 +210,8 @@ async def resolve_model_with_bind_tools(
     model_name: Optional[str] = None,
     query: Optional[str] = None,
     run_config: Any = None,
+    allowed_app_names: Optional[List[str]] = None,
+    app_scope_state: Any = None,
 ) -> BaseChatModel:
     """Optionally wrap ``active_model`` with ``bind_tools`` for native tool-calling tests.
 
@@ -282,7 +299,16 @@ async def resolve_model_with_bind_tools(
             if not tool_provider:
                 logger.warning("cuga_lite_bind_tools_mode=all but tool_provider is missing")
                 return active_model
-            by_name = await _indexed_tools_for_native_bind(tool_provider, tools_context_ref)
+            if allowed_app_names is None and app_scope_state is not None:
+                all_apps = await tool_provider.get_apps()
+                scoped_apps = select_scoped_apps(app_scope_state, all_apps)
+                if scoped_apps is not None:
+                    allowed_app_names = [app.name for app in scoped_apps if getattr(app, "name", None)]
+            by_name = await _indexed_tools_for_native_bind(
+                tool_provider,
+                tools_context_ref,
+                allowed_app_names=allowed_app_names,
+            )
             bound = await _cap_merge_bound(list(by_name.values()))
             if not bound:
                 return active_model
