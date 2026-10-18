@@ -23,12 +23,12 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.tools.runtime_tools import (
     resolve_runtime_backends,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import (
-    _ensure_web_app,
     _first_user_message_text,
     _load_default_find_tools_few_shot_examples,
     _web_search_enabled,
     create_find_tools_tool,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.app_scope import select_scoped_apps
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
     _get_knowledge_tool_scope_context,
     _knowledge_scope_instruction,
@@ -179,16 +179,10 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             # add here the implementation of force_
             force_lite_apps = list(getattr(settings.advanced_features, "builtin_tools", []) or [])
             if force_lite_apps:
-                allowed_apps_names = list(set([state.sub_task_app] + force_lite_apps))
-                if _web_search_enabled():
-                    allowed_apps_names.append("web")
                 # call authenticate_apps for the allowed apps
                 if settings.advanced_features.benchmark == "appworld":
                     await call_authenticate_apps(force_lite_apps)
-                apps_for_prompt = [app for app in all_apps if app.name in allowed_apps_names]
-            else:
-                apps_for_prompt = [app for app in all_apps if app.name == state.sub_task_app]
-                apps_for_prompt = _ensure_web_app(apps_for_prompt, all_apps)
+            apps_for_prompt = select_scoped_apps(state, all_apps) or []
             # Get only tools for this specific app
             tools_for_execution = []
             for app in apps_for_prompt:
@@ -202,10 +196,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         elif state.api_intent_relevant_apps:
             # Filter to API apps
             all_apps = await adapter._base_tool_provider.get_apps()
-            apps_for_prompt = [
-                app for app in state.api_intent_relevant_apps if hasattr(app, 'type') and app.type == 'api'
-            ]
-            apps_for_prompt = _ensure_web_app(apps_for_prompt, all_apps)
+            apps_for_prompt = select_scoped_apps(state, all_apps) or []
             # Get tools only for the identified apps
             tools_for_execution = []
             for app in apps_for_prompt:
