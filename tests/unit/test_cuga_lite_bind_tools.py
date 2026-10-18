@@ -1,5 +1,6 @@
 """CugaLite native bind_tools resolution (mode=tools by tool name)."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,6 +16,81 @@ def _stub_tool(name: str) -> StructuredTool:
         return "ok"
 
     return StructuredTool.from_function(_fn, name=name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [
+        SimpleNamespace(sub_task_app="crm", api_intent_relevant_apps=None),
+        SimpleNamespace(
+            sub_task_app=None,
+            api_intent_relevant_apps=[SimpleNamespace(name="crm", type="api")],
+        ),
+    ],
+    ids=["subtask-app", "api-intent-apps"],
+)
+async def test_bind_tools_all_respects_task_app_scope(state):
+    """Native binding must not expose tools rejected by the sandbox app scope."""
+    crm_tool = _stub_tool("crm_list_contacts")
+    mail_tool = _stub_tool("mail_send_message")
+    crm_app = SimpleNamespace(name="crm", type="api")
+    mail_app = SimpleNamespace(name="mail", type="api")
+    provider = AsyncMock()
+    provider.get_apps = AsyncMock(return_value=[crm_app, mail_app])
+    provider.get_all_tools = AsyncMock(return_value=[crm_tool, mail_tool])
+    provider.get_tools = AsyncMock(
+        side_effect=lambda app_name: [crm_tool] if app_name == "crm" else [mail_tool]
+    )
+    model = MagicMock()
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.app_scope._web_search_enabled",
+            return_value=False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.app_scope.settings.advanced_features.builtin_tools",
+            [],
+        ),
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={"cuga_lite_bind_tools_mode": "all"},
+            tools_context_ref={},
+            tool_provider=provider,
+            app_scope_state=state,
+        )
+
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    assert [tool.name for tool in bound] == ["crm_list_contacts"]
+    provider.get_tools.assert_awaited_once_with("crm")
+    provider.get_all_tools.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_bind_tools_scoped_all_keeps_runtime_overlay_tools():
+    """Request-local runtime tools remain available beside scoped provider tools."""
+    crm_tool = _stub_tool("crm_list_contacts")
+    runtime_tool = _stub_tool("run_command")
+    provider = AsyncMock()
+    provider.get_tools = AsyncMock(return_value=[crm_tool])
+    provider.get_all_tools = AsyncMock()
+    model = MagicMock()
+
+    await resolve_model_with_bind_tools(
+        model,
+        configurable={"cuga_lite_bind_tools_mode": "all"},
+        tools_context_ref={"_lc_bind_tools_overlay_structured_tools": [runtime_tool]},
+        tool_provider=provider,
+        allowed_app_names=["crm"],
+    )
+
+    (bound,), _kwargs = model.bind_tools.call_args
+    assert [tool.name for tool in bound] == ["crm_list_contacts", "run_command"]
+    provider.get_all_tools.assert_not_awaited()
 
 
 def test_resolve_bind_tools_fields_tool_names_fallback_chain():
